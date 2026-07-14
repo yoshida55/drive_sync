@@ -211,6 +211,17 @@ def open_in_vscode(path):
         return False
 
 
+def open_in_explorer(path):
+    """フォルダをエクスプローラーで開く（Windows）。os.startfile がフォルダを既定で開く。"""
+    log.info("エクスプローラーで開きます: %s", path)
+    try:
+        os.startfile(path)  # noqa: S606  Windows専用。フォルダを開く
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.error("エクスプローラー起動に失敗: %s", e)
+        return False
+
+
 # =====================================================================
 # 単体動作チェック（python core.py で実行）
 # =====================================================================

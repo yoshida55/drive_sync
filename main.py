@@ -71,11 +71,13 @@ class App(tk.Tk):
         self.sub_list.pack(fill="both", expand=True, padx=8)
         self.sub_list.bind("<Double-Button-1>", lambda e: self.bring_selected_sub())
 
-        # 一番下：開くボタン
+        # 一番下：開くボタン（2種類）
         bottom = tk.Frame(self)
         bottom.pack(fill="x", **pad)
-        tk.Button(bottom, text="選んだフォルダをコピーして VS Code で開く",
-                  command=self.bring_selected_sub).pack(fill="x")
+        tk.Button(bottom, text="コピーして VS Code で開く（ダブルクリックと同じ）",
+                  command=lambda: self.bring_selected_sub("vscode")).pack(fill="x", pady=(0, 3))
+        tk.Button(bottom, text="コピーしてフォルダを開く（エクスプローラー）",
+                  command=lambda: self.bring_selected_sub("explorer")).pack(fill="x")
 
     def _refresh_parent_label(self):
         self.parent_label.config(text=f"親フォルダ： {self.cfg['parent_folder']}")
@@ -143,20 +145,22 @@ class App(tk.Tk):
     # ---------------------------------------------------------------
     # ③ 選んだサブフォルダをコピーして開く
     # ---------------------------------------------------------------
-    def bring_selected_sub(self):
+    def bring_selected_sub(self, opener="vscode"):
         idx = self._selected_index(self.sub_list)
         if idx is None:
             messagebox.showinfo("お知らせ", "中のフォルダを選んでください。")
             return
-        self._bring(self._sub_hits[idx])
+        self._bring(self._sub_hits[idx], opener=opener)
 
     _LOCK_HINT = (
         "同じフォルダを VS Code で開いていると、使用中で上書き・削除ができません。\n"
         "そのフォルダを開いている VS Code を閉じてから、もう一度お試しください。"
     )
 
-    def _bring(self, sub):
-        """1つのサブフォルダをコピー先へコピーして VS Code で開く。"""
+    def _bring(self, sub, opener="vscode"):
+        """1つのサブフォルダをコピー先へコピーして開く。
+        opener="vscode" … VS Code で開く / opener="explorer" … エクスプローラーで開く。
+        """
         src = sub["path"]
         dest_root = self.cfg["copy_dest"]
         ignore = self.cfg.get("ignore", [])
@@ -198,16 +202,26 @@ class App(tk.Tk):
             messagebox.showerror("エラー", "コピーに失敗しました。ログを確認してください。")
             return
 
-        # VS Code で開く
-        if core.open_in_vscode(result):
-            messagebox.showinfo("完了", f"コピーして VS Code で開きました：\n{result}")
+        # コピー後、指定された方法で開く
+        if opener == "explorer":
+            if core.open_in_explorer(result):
+                messagebox.showinfo("完了", f"コピーしてフォルダを開きました：\n{result}")
+            else:
+                messagebox.showwarning(
+                    "フォルダを開けません",
+                    f"コピーは完了しました：\n{result}\n\n"
+                    "エクスプローラーの起動に失敗しました。手動で開いてください。",
+                )
         else:
-            messagebox.showwarning(
-                "VS Code が起動できません",
-                f"コピーは完了しました：\n{result}\n\n"
-                "VS Code の `code` コマンドが使えない可能性があります。\n"
-                "（VS Code で Ctrl+Shift+P → 'Shell Command: Install code command in PATH'）",
-            )
+            if core.open_in_vscode(result):
+                messagebox.showinfo("完了", f"コピーして VS Code で開きました：\n{result}")
+            else:
+                messagebox.showwarning(
+                    "VS Code が起動できません",
+                    f"コピーは完了しました：\n{result}\n\n"
+                    "VS Code の `code` コマンドが使えない可能性があります。\n"
+                    "（VS Code で Ctrl+Shift+P → 'Shell Command: Install code command in PATH'）",
+                )
 
     # ---------------------------------------------------------------
     # 設定画面
