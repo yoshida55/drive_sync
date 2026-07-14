@@ -1,0 +1,8 @@
+{
+  "parent_folder": "G:\\マイドライブ\\00_リンクワークス\\test",
+  "copy_dest": "D:\\work",
+  "ignore": [
+    "desktop.ini",
+    "Thumbs.db"
+  ]
+}
