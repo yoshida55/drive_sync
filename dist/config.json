@@ -1,8 +1,9 @@
 {
-  "parent_folder": "G:\\マイドライブ\\00_リンクワークス\\test",
-  "copy_dest": "D:\\work",
+  "parent_folder": "G:\\.shortcut-targets-by-id\\1Q9tNITn_1qAMxB4oZ-RK-AEYvidWcDTT\\01_就労継続支援B型_るぽ様\\01_ソースファイル",
+  "copy_dest": "C:\\Users\\guest04\\Desktop\\高橋研三\\03_knowledge\\各種資料\\00_るぽ様_案件",
   "ignore": [
     "desktop.ini",
     "Thumbs.db"
-  ]
+  ],
+  "clean_before_open": false
 }
