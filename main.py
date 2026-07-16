@@ -27,7 +27,7 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Google Drive → VS Code オープナー")
-        self.geometry("560x460")
+        self.geometry("560x580")
 
         self.cfg = core.load_config()
 
@@ -50,6 +50,9 @@ class App(tk.Tk):
         self.parent_label = tk.Label(top, text="", anchor="w", fg="#555")
         self.parent_label.pack(side="left", fill="x", expand=True)
         tk.Button(top, text="設定", command=self.open_settings).pack(side="right")
+
+        # 下のボタンが何をするのか、行ったり来たりの向きを図で見せる
+        self._draw_flow_diagram(self).pack(padx=8, pady=(2, 6))
 
         # 検索欄
         search = tk.Frame(self)
@@ -85,6 +88,40 @@ class App(tk.Tk):
         # 送信ボタンだけ Drive に書き込む＝押し間違えると困るので、離して赤字にする
         tk.Button(bottom, text="▲ Drive へ送る（上書き）", fg="#b00020",
                   command=self.push_selected_sub).pack(fill="x", pady=(10, 0))
+
+    @staticmethod
+    def _draw_flow_diagram(win):
+        """
+        メイン画面の上に置く「行って帰ってくる」の図。
+
+        下のボタンが Drive とパソコンのどっち向きの操作なのか、
+        色（青＝持ってくる／赤＝送る）で一目で分かるようにする。
+        """
+        c = tk.Canvas(win, width=540, height=112, bg="#fbfbfb",
+                      highlightthickness=1, highlightbackground="#dddddd")
+
+        # 左：Google ドライブ
+        c.create_rectangle(10, 18, 155, 100, outline="#c9d4e5", fill="#f2f7fd")
+        c.create_text(82, 38, text="Google ドライブ", fill="#3a5a8c", font=("", 9, "bold"))
+        c.create_text(82, 56, text="G:", font=("", 9))
+        c.create_text(82, 78, text="検索元 ＆ 戻し先", fill="#777", font=("", 8))
+
+        # 右：パソコン
+        c.create_rectangle(385, 18, 530, 100, outline="#c9d4e5", fill="#f2f7fd")
+        c.create_text(457, 38, text="パソコン", fill="#3a5a8c", font=("", 9, "bold"))
+        c.create_text(457, 56, text="コピー先", font=("", 9))
+        c.create_text(457, 78, text="ここで編集する", fill="#777", font=("", 8))
+
+        # 持ってくる（青）
+        c.create_line(158, 50, 382, 50, arrow="last", fill="#1565c0", width=2)
+        c.create_text(270, 35, text="① 検索して選ぶ → ② 持ってくる",
+                      fill="#1565c0", font=("", 9, "bold"))
+
+        # 送る（赤）
+        c.create_line(382, 80, 158, 80, arrow="last", fill="#b00020", width=2)
+        c.create_text(270, 95, text="③ Drive へ送る（上書き・控えを残す）",
+                      fill="#b00020", font=("", 9, "bold"))
+        return c
 
     def _refresh_parent_label(self):
         self.parent_label.config(text=f"親フォルダ： {self.cfg['parent_folder']}")
