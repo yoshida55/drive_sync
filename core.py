@@ -165,6 +165,36 @@ def get_last_sync(cfg, folder_name):
         return None
 
 
+def latest_origin_name(cfg, copy_dest):
+    """
+    「最後に持ってきた／送った」プロジェクト名を返す（送るときの既定にする）。
+
+    origins の synced_at が一番新しいものを選ぶ。ただしコピー先に実物が残っている
+    ものだけを候補にする（消したあとの記録が既定に入ると、押した瞬間に迷子になるため）。
+    旧形式（パスの文字列だけ）は時刻が無いので候補から外す。
+
+    戻り値: フォルダ名 / None（候補なし＝呼び出し側で選ばせる）
+    """
+    best = None
+    best_time = None
+    for name in cfg.get("origins", {}):
+        if not os.path.isdir(os.path.join(copy_dest, name)):
+            log.debug("既定の候補から除外（コピー先に実物が無い）: %s", name)
+            continue
+        synced = get_last_sync(cfg, name)
+        if synced is None:
+            log.debug("既定の候補から除外（同期時刻の記録が無い）: %s", name)
+            continue
+        if best_time is None or synced > best_time:
+            best, best_time = name, synced
+
+    if best is None:
+        log.info("送る既定の対象: 見つからず（一覧から選んでもらう）")
+    else:
+        log.info("送る既定の対象: %s（最終同期 %s）", best, best_time.strftime(_SYNC_FMT))
+    return best
+
+
 def touched_by_others(cfg, folder_name, dest):
     """
     Drive 側が「自分が最後に触ったあと」に更新されているか＝他の人が触ったかを見る。

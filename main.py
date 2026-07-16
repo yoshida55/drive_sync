@@ -9,7 +9,9 @@ main.py … GUI（tkinter）
        0件 → 中身がテキスト等だけなので、そのフォルダ自体を丸ごと持ってくる
        1件 → 有無を言わさずコピー＆VS Codeで開く
        複数 → 「どれを持ってきますか？」と一覧で選ばせる
-  4) 編集したら「Drive へ送る」で書き戻す。送り先は持ってきた元が既定（変更もできる）。
+  4) 編集したら「Drive へ送る」で書き戻す。押すと送信画面が1枚出るだけで、
+     送るもの（＝最後に持ってきたもの）と送り先（＝その持ってきた元）は最初から入っている。
+     違う物・違う場所にしたいときだけ、その画面の中の「対象を選ぶ」「変更」で切り替える。
   「設定」ボタンで 親フォルダ・コピー先・送り先 を変更できる。
 """
 
@@ -299,10 +301,14 @@ class App(tk.Tk):
     # ④ ローカルで編集したものを Drive へ送る（上書き）
     # ---------------------------------------------------------------
     def push_selected_sub(self):
-        """ローカル（copy_dest）のプロジェクトを選んで、送り先（push_dest）へ書き戻す。
+        """ローカル（copy_dest）のプロジェクトを、送り先（push_dest）へ書き戻す。
 
         送るものはローカルにしかないので、選ぶ一覧も Drive 側（①②）ではなくローカルから作る。
         （Drive 側から選ぶ作りにすると、Drive がまだ空のときに一生送れなくなる）
+
+        対象は「最後に持ってきたもの」を既定にして、そのまま送信画面（1枚）へ行く。
+        毎回リストから選び直すのは、直前に持ってきた物を送るという実際の使い方に合わないため。
+        違う物を送りたいときは、送信画面の中の「対象を選ぶ」で切り替えられる。
         """
         copy_dest = self.cfg["copy_dest"]
         keep = self.cfg.get("push_backup_keep", 3)
@@ -316,18 +322,19 @@ class App(tk.Tk):
             )
             return
 
-        name = self._choose_local_project(copy_dest)
+        # 既定＝最後に持ってきた／送ったもの。記録が無いときだけ一覧から選んでもらう
+        name = core.latest_origin_name(self.cfg, copy_dest)
         if name is None:
+            log.info("既定の対象が決められないので、一覧から選んでもらいます")
+            name = self._choose_local_project(copy_dest)
+            if name is None:
+                return
+
+        chosen = self._ask_push(copy_dest, name)
+        if chosen is None:
             return
+        name, dest_parent = chosen
         src = os.path.join(copy_dest, name)
-
-        # 戻し先は「持ってきた元」を既定にする。記録が無ければ設定の送り先を出しておく
-        origin = core.get_origin(self.cfg, name)
-        default_parent = os.path.dirname(origin) if origin else self.cfg.get("push_dest", "")
-
-        dest_parent = self._ask_push_dest(name, src, default_parent, origin)
-        if dest_parent is None:
-            return
 
         try:
             result = core.push_project(src, dest_parent, ignore=ignore, overwrite=True, backup_keep=keep)
@@ -349,22 +356,30 @@ class App(tk.Tk):
                     "おかしくなったら、この控えを元の名前にリネームすれば戻せます。")
         messagebox.showinfo("送信完了", msg)
 
-    def _choose_local_project(self, copy_dest):
-        """ローカルのプロジェクトを1つ選ばせる。戻り値: 実フォルダ名 / None（やめた）。"""
+    def _choose_local_project(self, copy_dest, parent=None, current=None):
+        """ローカルのプロジェクトを1つ選ばせる。戻り値: 実フォルダ名 / None（やめた）。
+
+        parent  … このウィンドウの上に出す（送信画面から呼ぶとき用）
+        current … 今の対象。渡すと最初からその行が選ばれた状態で開く。
+                  これが指定されているときは、1件しか無くても一覧を出す
+                  （「対象を選ぶ」を押したのに何も出ないと、壊れたように見えるため）
+        """
+        owner = parent or self
         projects = core.list_subfolders(copy_dest)
         if not projects:
             messagebox.showinfo(
                 "送るものがありません",
                 f"ローカルにプロジェクトがありません：\n{copy_dest}",
+                parent=owner,
             )
             return None
-        if len(projects) == 1:
+        if len(projects) == 1 and current is None:
             return projects[0]["name"]  # 1つだけなら選ぶ手間はいらない（確認は次で出る）
 
-        win = tk.Toplevel(self)
+        win = tk.Toplevel(owner)
         win.title("どれを Drive へ送りますか？")
         win.geometry("420x300")
-        win.transient(self)
+        win.transient(owner)
         win.grab_set()
 
         tk.Label(win, text=f"送るプロジェクトを選んでください（{copy_dest}）",
@@ -373,7 +388,10 @@ class App(tk.Tk):
         box.pack(fill="both", expand=True, padx=8)
         for p in projects:
             box.insert(tk.END, p["display"])
-        box.selection_set(0)
+        # 今の対象があればそこを選んでおく（無ければ先頭）
+        start = next((i for i, p in enumerate(projects) if p["name"] == current), 0)
+        box.selection_set(start)
+        box.see(start)
 
         picked = {"name": None}
 
@@ -385,31 +403,44 @@ class App(tk.Tk):
 
         btns = tk.Frame(win)
         btns.pack(fill="x", padx=8, pady=8)
-        tk.Button(btns, text="この中身を送る", command=ok).pack(side="right")
+        tk.Button(btns, text="これにする", command=ok).pack(side="right")
         tk.Button(btns, text="やめる", command=win.destroy).pack(side="right", padx=6)
         box.bind("<Double-Button-1>", lambda e: ok())
 
         self.wait_window(win)  # 選び終わるまで待つ
         return picked["name"]
 
-    def _ask_push_dest(self, name, src, default_parent, origin):
+    def _ask_push(self, copy_dest, name):
         """
-        送る前の最終確認。戻し先（持ってきた元）を最初から入れておき、必要なら変更させる。
+        送る画面。ここ1枚で「何を・どこへ」を決めて送るところまで完結させる。
 
-        戻り値: 送り先の親フォルダ / None（やめた）
+        対象（送るもの）も送り先も最初から埋まっていて、どちらもこの画面の中で変えられる。
+        既定は 対象＝最後に持ってきたもの / 送り先＝その持ってきた元。
+        つまり「持ってきて、直して、送る」だけなら、押すのは最後の1ボタンで済む。
+
+        戻り値: (送るフォルダ名, 送り先の親フォルダ) / None（やめた）
         """
         win = tk.Toplevel(self)
-        win.title("Drive へ送る確認")
-        win.geometry("660x360")
+        win.title("Drive へ送る")
+        win.geometry("660x420")
         win.transient(self)
         win.grab_set()
 
-        parent_var = tk.StringVar(value=default_parent)
-        picked = {"parent": None}
+        parent_var = tk.StringVar()
+        # 対象を切り替えると戻し先も一緒に変わるので、2つまとめて持っておく
+        state = {"name": None, "origin": None}
+        picked = {"name": None, "parent": None}
 
-        tk.Label(win, text=f"「{name}」を Drive へ送ります", font=("", 11, "bold"),
-                 anchor="w").pack(fill="x", padx=12, pady=(12, 4))
-        tk.Label(win, text=f"送るもの： {src}", anchor="w", fg="#555").pack(fill="x", padx=12)
+        title = tk.Label(win, text="", font=("", 11, "bold"), anchor="w")
+        title.pack(fill="x", padx=12, pady=(12, 4))
+
+        # 送るものの行（既定は最後に持ってきたもの。「対象を選ぶ」で切り替えられる）
+        src_row = tk.Frame(win)
+        src_row.pack(fill="x", padx=12, pady=(6, 0))
+        tk.Label(src_row, text="送るもの：").pack(side="left")
+        src_label = tk.Label(src_row, text="", anchor="w", fg="#555")
+        src_label.pack(side="left", fill="x", expand=True)
+        tk.Button(src_row, text="対象を選ぶ", command=lambda: pick_src()).pack(side="right")
 
         # 送り先の行（既定は持ってきた元。変更ボタンで別のフォルダにもできる）
         row = tk.Frame(win)
@@ -422,10 +453,25 @@ class App(tk.Tk):
         status = tk.Label(win, text="", justify="left", anchor="nw")
         status.pack(fill="both", expand=True, padx=12, pady=8)
 
+        def load(new_name):
+            """対象を決める（初回・切り替えの両方）。送り先も持ってきた元に戻す。"""
+            state["name"] = new_name
+            state["origin"] = core.get_origin(self.cfg, new_name)
+            # 戻し先は「持ってきた元」を既定にする。記録が無ければ設定の送り先を出しておく
+            parent_var.set(os.path.dirname(state["origin"]) if state["origin"]
+                           else self.cfg.get("push_dest", ""))
+            log.info("送る対象: %s（戻し先の既定 %s）", new_name, parent_var.get())
+            refresh()
+
         def refresh():
-            """送り先が変わるたびに、行き先と Drive 側の状態を出し直す。"""
+            """対象や送り先が変わるたびに、行き先と Drive 側の状態を出し直す。"""
+            name = state["name"]
+            origin = state["origin"]
             parent = parent_var.get()
             dest = os.path.join(parent, name)
+
+            title.config(text=f"「{core.display_name(name)}」を Drive へ送ります")
+            src_label.config(text=os.path.join(copy_dest, name))
             dest_label.config(text=dest)
 
             lines = []
@@ -479,13 +525,22 @@ class App(tk.Tk):
             warn = any(ln.startswith("⚠") for ln in lines)
             status.config(text="\n".join(lines), fg="#b00020" if warn else "#333")
 
+        def pick_src():
+            """送るものを選び直す。選び終わったら送り先も持ってきた元に付け替える。"""
+            other = self._choose_local_project(copy_dest, parent=win, current=state["name"])
+            win.grab_set()  # 子ウィンドウが閉じるとロックが外れるので、この画面に戻す
+            if other:
+                load(other)
+
         def pick():
-            d = filedialog.askdirectory(initialdir=parent_var.get() or "/")
+            d = filedialog.askdirectory(initialdir=parent_var.get() or "/", parent=win)
             if d:
                 parent_var.set(os.path.normpath(d))
                 refresh()
 
         def send():
+            name = state["name"]
+            origin = state["origin"]
             parent = parent_var.get()
             # 元の場所から外れているときだけ、もう一段確認する
             if origin and not core.same_path(parent, os.path.dirname(origin)):
@@ -499,6 +554,7 @@ class App(tk.Tk):
                 )
                 if not ok:
                     return
+            picked["name"] = name
             picked["parent"] = parent
             win.destroy()
 
@@ -508,9 +564,11 @@ class App(tk.Tk):
         send_btn.pack(side="right")
         tk.Button(btns, text="やめる", command=win.destroy).pack(side="right", padx=6)
 
-        refresh()
+        load(name)
         self.wait_window(win)
-        return picked["parent"]
+        if picked["parent"] is None:
+            return None
+        return picked["name"], picked["parent"]
 
     # ---------------------------------------------------------------
     # 設定画面
