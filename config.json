@@ -4,5 +4,28 @@
   "ignore": [
     "desktop.ini",
     "Thumbs.db"
-  ]
+  ],
+  "push_dest": "G:\\マイドライブ\\00_リンクワークス\\test",
+  "push_ignore": [
+    "desktop.ini",
+    "Thumbs.db",
+    ".git",
+    "node_modules",
+    "venv",
+    ".venv",
+    "__pycache__"
+  ],
+  "push_backup_keep": 2,
+  "clean_before_open": false,
+  "origins": {
+    "PJ栗原": {
+      "path": "G:\\マイドライブ\\00_リンクワークス\\test\\PJ栗原",
+      "synced_at": "2026-07-16 22:18:56"
+    },
+    "新しいフォルダー": "G:\\マイドライブ\\00_リンクワークス\\test\\PJ栗原\\新しいフォルダー",
+    "PJ_高橋": {
+      "path": "G:\\マイドライブ\\00_リンクワークス\\test\\PJ_高橋",
+      "synced_at": "2026-07-16 22:18:34"
+    }
+  }
 }

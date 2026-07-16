@@ -3,19 +3,22 @@
 core.py … 検索・コピー・VS Code起動のロジック（GUIから呼ばれる裏方）
 
 【安全方針】
-- Google Drive 側（parent_folder）は「読むだけ」。コピー元として参照するだけで書き込まない。
-- 編集はローカルのコピー（copy_dest）上で行う。Drive へ書き戻す機能は持たない。
+- 検索元の Google Drive（parent_folder）は「読むだけ」。コピー元として参照するだけで書き込まない。
+- 編集はローカルのコピー（copy_dest）上で行う。
+- Drive へ書き戻すのは push_project() だけ。書き戻し先は push_dest に限定し、
+  上書きするときも既存フォルダは削除せず `_bkup_日時` にリネームして残す（戻せるようにする）。
 
 プロトタイプ段階なのでログは多め（logging.INFO / DEBUG）。
 """
 
+import fnmatch
 import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- ログ設定（何が起きているか全部出す） ---
 logging.basicConfig(
@@ -40,7 +43,46 @@ DEFAULT_CONFIG = {
     "copy_dest": "D:\\work",
     "ignore": ["desktop.ini", "Thumbs.db"],
     "clean_before_open": False,  # 開く前にコピー先の古いフォルダを消すか
+    # --- Drive へ送る（プッシュ）用 ---
+    "push_dest": "G:\\マイドライブ\\00_リンクワークス\\test",
+    # 送るときだけ余分に除外するもの。.git や node_modules を Drive に上げると
+    # ファイル数が爆発して同期が終わらなくなるので必ず外す。
+    "push_ignore": ["desktop.ini", "Thumbs.db", ".git", "node_modules",
+                    "venv", ".venv", "__pycache__"],
+    "push_backup_keep": 2,  # 上書き前の控えを何世代残すか
 }
+
+# 送信時に作る控えフォルダの名前（例: PJ_sample_bkup_20260716_210341）
+_BKUP_MARK = "_bkup_"
+_STAMP_FMT = "%Y%m%d_%H%M%S"  # 名前順に並べると古い順になる形式
+
+# Google ドキュメント類。中身はネット上にあり、Gドライブに見えているのは「入口」だけ。
+# Python から開こうとすると [Errno 22] で読めない（copy2 も copyfile も手書きも全滅）ので、
+# 設定に関係なく必ずコピー対象から外す。持ってきても中身は入らないため実害はない。
+GOOGLE_DOC_PATTERNS = ["*.gdoc", "*.gsheet", "*.gslides", "*.gform",
+                       "*.gdraw", "*.gmap", "*.gsite", "*.glink", "*.gtable"]
+
+
+def _with_google_docs(ignore):
+    """設定の除外リストに、コピー不可の Google 書類を必ず足す。"""
+    return list(ignore or []) + GOOGLE_DOC_PATTERNS
+
+
+def find_google_docs(path):
+    """
+    path の中にある Google 書類（.gdoc 等）を探して、相対パスのリストで返す。
+    コピーを飛ばしたことをユーザーに伝えるのに使う。
+    """
+    if not os.path.isdir(path):
+        return []
+    found = []
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            if any(fnmatch.fnmatch(name, pat) for pat in GOOGLE_DOC_PATTERNS):
+                found.append(os.path.relpath(os.path.join(root, name), path))
+    if found:
+        log.info("Google書類 %d 件（コピー不可なので飛ばす）: %s", len(found), found)
+    return found
 
 
 # =====================================================================
@@ -70,6 +112,92 @@ def save_config(cfg):
 
 
 # =====================================================================
+# 「どこから持ってきたか・最後にいつ触ったか」の記録
+#   例: origins["PJ_高橋"] = {"path": "G:\\...\\高橋さん\\PJ_高橋",
+#                             "synced_at": "2026-07-16 22:11:03"}
+#   - path     … 送るときの戻し先
+#   - synced_at … 自分が最後に「持ってきた or 送った」時刻。
+#                 Drive の更新が「自分の仕業か、他人の編集か」を見分けるのに使う。
+#   Drive 側にメモファイルを置くと送信時に紛れ込むので、記録はローカルの config だけに持つ。
+# =====================================================================
+_SYNC_FMT = "%Y-%m-%d %H:%M:%S"
+
+# Drive の日付は同期の都合で少しズレる。この範囲内なら「自分が送った分」とみなす。
+SYNC_GRACE_MINUTES = 5
+
+
+def remember_origin(cfg, folder_name, src, synced_at=None):
+    """持ってきた／送ったときに、元のフルパスと「今触った」時刻を覚える。"""
+    origins = cfg.setdefault("origins", {})
+    origins[folder_name] = {
+        "path": src,
+        "synced_at": (synced_at or datetime.now()).strftime(_SYNC_FMT),
+    }
+    save_config(cfg)
+    log.info("戻し先を覚えました: %s → %s（同期 %s）",
+             folder_name, src, origins[folder_name]["synced_at"])
+
+
+def _origin_record(cfg, folder_name):
+    """記録を取り出す。昔の形式（パスの文字列だけ）でも読めるようにする。"""
+    rec = cfg.get("origins", {}).get(folder_name)
+    if isinstance(rec, str):
+        return {"path": rec, "synced_at": None}  # 旧形式：時刻は分からない
+    return rec
+
+
+def get_origin(cfg, folder_name):
+    """覚えている元のフルパスを返す。無ければ None（＝まだ持ってきていない）。"""
+    rec = _origin_record(cfg, folder_name)
+    origin = rec["path"] if rec else None
+    log.debug("戻し先の記録: %s → %s", folder_name, origin)
+    return origin
+
+
+def get_last_sync(cfg, folder_name):
+    """自分が最後に持ってきた／送った時刻（datetime）。分からなければ None。"""
+    rec = _origin_record(cfg, folder_name)
+    if not rec or not rec.get("synced_at"):
+        return None
+    try:
+        return datetime.strptime(rec["synced_at"], _SYNC_FMT)
+    except ValueError:
+        return None
+
+
+def touched_by_others(cfg, folder_name, dest):
+    """
+    Drive 側が「自分が最後に触ったあと」に更新されているか＝他の人が触ったかを見る。
+
+    自分が送れば Drive の日付は必ず新しくなる。そこで「ローカルより新しいか」ではなく
+    「自分が最後に同期した時刻より、さらに後に更新されているか」で判定する。
+    戻り値: (他人が触ったか, Drive側の最終更新)
+    """
+    dest_time = latest_mtime(dest)
+    if dest_time is None:
+        return False, None
+
+    last_sync = get_last_sync(cfg, folder_name)
+    if last_sync is None:
+        return False, dest_time  # 記録が無いので判断できない（別の警告を出す側で扱う）
+
+    # 同期のズレぶんは自分の仕業とみなす
+    limit = last_sync + timedelta(minutes=SYNC_GRACE_MINUTES)
+    others = dest_time > limit
+    log.info("他人の編集チェック: Drive=%s / 自分の最終同期=%s → %s",
+             dest_time.strftime(_SYNC_FMT), last_sync.strftime(_SYNC_FMT),
+             "他人が触った可能性あり" if others else "自分の分")
+    return others, dest_time
+
+
+def same_path(a, b):
+    """2つのパスが同じ場所を指すか（Windows は大文字小文字を区別しないので揃えて比べる）。"""
+    if not a or not b:
+        return False
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+
+# =====================================================================
 # 検索・一覧
 # =====================================================================
 # 表示するときに頭から外す接頭辞（あれば外す・無ければそのまま）
@@ -95,6 +223,14 @@ def _list_dirs(path):
     return dirs
 
 
+def _without_backups(names):
+    """送信の控え（〇〇_bkup_日時）を一覧から外す。検索結果に混ざると邪魔なので。"""
+    keep = [n for n in names if _BKUP_MARK not in n]
+    if len(keep) != len(names):
+        log.debug("控えフォルダ %d 件を一覧から除外", len(names) - len(keep))
+    return keep
+
+
 def find_folders(parent, keyword):
     """
     親フォルダ直下のフォルダ全部（人・共通・結合など何でも）から
@@ -107,7 +243,7 @@ def find_folders(parent, keyword):
     log.info("検索: parent=%s / keyword='%s'", parent, keyword)
 
     results = []
-    for name in _list_dirs(parent):
+    for name in _without_backups(_list_dirs(parent)):
         disp = display_name(name)
         if keyword == "" or (keyword in name) or (keyword in disp):
             results.append({
@@ -127,7 +263,7 @@ def list_subfolders(target_dir):
     """
     log.info("サブフォルダ一覧: %s", target_dir)
     results = []
-    for name in _list_dirs(target_dir):
+    for name in _without_backups(_list_dirs(target_dir)):
         results.append({
             "name": name,
             "display": display_name(name),
@@ -150,7 +286,7 @@ def copy_project(src, copy_dest, ignore=None, overwrite=False):
         overwrite=True  → 一度消してからコピー
     戻り値: コピー先のフルパス（成功時） / False（上書き確認が必要なとき）
     """
-    ignore = ignore or []
+    ignore = _with_google_docs(ignore)
     folder_name = os.path.basename(src.rstrip("\\/"))
     dest = os.path.join(copy_dest, folder_name)
     log.info("コピー開始: %s → %s", src, dest)
@@ -200,6 +336,120 @@ def clean_dest(copy_dest):
     return removed, failed
 
 
+# =====================================================================
+# Drive へ送る（プッシュ）
+#   ここだけが Drive に書き込む処理。他はすべて読むだけ。
+# =====================================================================
+def latest_mtime(path):
+    """
+    フォルダの中で一番新しい更新日時を返す（datetime）。中身が無ければフォルダ自身の日時。
+    「Drive 側が自分より新しくないか（＝他所で編集されていないか）」の判定に使う。
+    """
+    if not os.path.exists(path):
+        return None
+
+    newest = os.path.getmtime(path)
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                newest = max(newest, os.path.getmtime(os.path.join(root, name)))
+            except OSError:
+                continue  # 同期中などで読めないファイルは飛ばす
+    return datetime.fromtimestamp(newest)
+
+
+def _backup_dirs(push_dest, folder_name):
+    """push_dest の中にある「folder_name の控え」を古い順に返す。"""
+    prefix = folder_name + _BKUP_MARK
+    names = [n for n in _list_dirs(push_dest) if n.startswith(prefix)]
+    return sorted(names)  # 日時が名前に入っているので名前順＝古い順
+
+
+def _trim_backups(push_dest, folder_name, keep):
+    """控えを keep 世代だけ残して古いものを消す（Drive を控えだらけにしないため）。"""
+    backups = _backup_dirs(push_dest, folder_name)
+    for name in backups[:max(0, len(backups) - keep)]:
+        p = os.path.join(push_dest, name)
+        try:
+            shutil.rmtree(p)
+            log.info("古い控えを削除: %s", p)
+        except OSError as e:
+            log.error("古い控えを削除できません: %s (%s)", p, e)
+
+
+def push_project(src, push_dest, ignore=None, overwrite=False, backup_keep=3):
+    """
+    ローカルの src フォルダを push_dest の下へ送る（＝Google Drive へ書き戻す）。
+
+    上書きするときも既存フォルダは削除しない。`名前_bkup_日時` にリネームして退避してから
+    新しいものをコピーする。事故ってもリネームを戻せば元に戻せる。
+
+    - overwrite=False で送り先に同名フォルダがある → False を返す
+      （呼び出し側で確認ダイアログを出す想定）
+    - overwrite=True → 退避してからコピーし、控えは backup_keep 世代だけ残す
+
+    戻り値: (送り先パス, 退避先パス or None) / False（上書き確認が必要なとき）
+    """
+    ignore = _with_google_docs(ignore)
+    folder_name = os.path.basename(src.rstrip("\\/"))
+    dest = os.path.join(push_dest, folder_name)
+    log.info("Drive へ送る: %s → %s", src, dest)
+
+    if not os.path.isdir(src):
+        raise OSError(f"送るフォルダがありません: {src}")
+
+    os.makedirs(push_dest, exist_ok=True)
+
+    backup = None
+    if os.path.exists(dest):
+        if not overwrite:
+            log.warning("送り先に同名フォルダが既にあります（上書き確認が必要）: %s", dest)
+            return False
+        # 消さずにリネームで退避（ここが「怖くない」の要）
+        backup = os.path.join(push_dest, folder_name + _BKUP_MARK + datetime.now().strftime(_STAMP_FMT))
+        os.rename(dest, backup)
+        log.warning("上書き前に控えを作りました: %s", backup)
+
+    try:
+        shutil.copytree(src, dest, ignore=shutil.ignore_patterns(*ignore))
+    except Exception:
+        # コピーに失敗したら控えを元の名前に戻す（中途半端な状態を残さない）
+        if backup and not os.path.exists(dest):
+            os.rename(backup, dest)
+            log.error("コピーに失敗したので控えを元に戻しました: %s", dest)
+        raise
+
+    log.info("送信完了: %s", dest)
+    if backup:
+        _trim_backups(push_dest, folder_name, backup_keep)
+    return dest, backup
+
+
+def restore_backup(push_dest, folder_name):
+    """
+    一番新しい控えで送り先を元に戻す（送ったあと「やっぱり戻したい」用）。
+
+    今の folder_name を捨てて、最新の `名前_bkup_日時` を folder_name にリネームし直す。
+    戻り値: 戻した控えの名前 / None（控えが無い）
+    """
+    backups = _backup_dirs(push_dest, folder_name)
+    if not backups:
+        log.warning("控えがありません: %s の中に %s%s* が無い", push_dest, folder_name, _BKUP_MARK)
+        return None
+
+    newest = backups[-1]
+    dest = os.path.join(push_dest, folder_name)
+    if os.path.exists(dest):
+        shutil.rmtree(dest)  # 送った直後の物を捨てる
+        log.warning("送信後のフォルダを削除: %s", dest)
+    os.rename(os.path.join(push_dest, newest), dest)
+    log.info("控えから復元しました: %s → %s", newest, folder_name)
+    return newest
+
+
+# =====================================================================
+# 開く
+# =====================================================================
 def open_in_vscode(path):
     """VS Code でフォルダを開く。Windows の code は code.cmd なので shell=True。"""
     log.info("VS Code で開きます: %s", path)
