@@ -5,5 +5,30 @@
     "desktop.ini",
     "Thumbs.db"
   ],
-  "clean_before_open": false
+  "clean_before_open": false,
+  "push_dest": "G:\\マイドライブ\\00_リンクワークス\\test",
+  "push_ignore": [
+    "desktop.ini",
+    "Thumbs.db",
+    ".git",
+    "node_modules",
+    "venv",
+    ".venv",
+    "__pycache__"
+  ],
+  "push_backup_keep": 2,
+  "origins": {
+    "PJ_髙橋": {
+      "path": "G:\\.shortcut-targets-by-id\\1Q9tNITn_1qAMxB4oZ-RK-AEYvidWcDTT\\01_就労継続支援B型_るぽ様\\01_ソースファイル\\00_髙橋\\PJ_髙橋",
+      "synced_at": "2026-07-17 09:39:27"
+    },
+    "PJ_結合": {
+      "path": "G:\\.shortcut-targets-by-id\\1Q9tNITn_1qAMxB4oZ-RK-AEYvidWcDTT\\01_就労継続支援B型_るぽ様\\01_ソースファイル\\02_結合\\PJ_結合",
+      "synced_at": "2026-07-17 09:54:21"
+    },
+    "PJ_芙香": {
+      "path": "G:\\.shortcut-targets-by-id\\1Q9tNITn_1qAMxB4oZ-RK-AEYvidWcDTT\\01_就労継続支援B型_るぽ様\\01_ソースファイル\\00_芙香\\PJ_芙香",
+      "synced_at": "2026-07-17 10:23:10"
+    }
+  }
 }
